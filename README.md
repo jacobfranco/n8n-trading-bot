@@ -58,7 +58,7 @@ This makes the workflow resilient across restarts and ensures accurate historica
 
 ## Files
 
-- `workflows/dca-trading-bot.json` — Main n8n workflow export, containing all logic for DCA detection, TP placement, fill handling, fallback matching, and notifications.
+- `workflow.json` — Main n8n workflow export, containing all logic for DCA detection, TP placement, fill handling, fallback matching, and notifications.
 
 ## Stack
 
