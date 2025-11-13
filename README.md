@@ -3,6 +3,10 @@
 A fully automated dollar-cost-averaging (DCA) trading workflow built with **n8n**, the **Interactive Brokers (IBKR) TWS API**, and **Postgres**.  
 This system was designed to continuously monitor market prices for **KO (Coca-Cola)**, execute defined DCA entries, place take-profit (TP) orders, detect fills, and send notifications — all without manual intervention.
 
+<p align="center">
+  <img src="images/flow.png" width="850">
+</p>
+
 ## How the System Works
 
 The workflow implements a structured, rule-based DCA strategy around buying **10-share tranches** of KO and exiting them through a fixed take-profit increment.
