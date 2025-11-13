@@ -1,0 +1,2099 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        },
+        "filters": {
+          "includeSpamTrash": false,
+          "labelIds": ["Label_3471539291349768342"]
+        }
+      },
+      "id": "2a578a3b-0751-4e9b-bd06-6d3162cd188f",
+      "name": "Gmail Trigger",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [-4544, 320],
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "szw76cI7RCjwd91z",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function hdr(obj, name) {\n  if (!obj) return '';\n  // 1) payload.headers array\n  const arr = obj.payload?.headers;\n  if (Array.isArray(arr)) {\n    const hit = arr.find(h => h.name?.toLowerCase() === name.toLowerCase());\n    if (hit?.value) return hit.value;\n  }\n  // 2) headers object map\n  const hmap = obj.headers;\n  if (hmap) {\n    const v = hmap[name] ?? hmap[name.toLowerCase?.()];\n    if (Array.isArray(v)) return v[0];\n    if (v) return v;\n  }\n  // 3) root-level\n  const root = obj[name] ?? obj[name.toLowerCase?.()];\n  if (root) return root;\n  return '';\n}\n\nfunction parseCmd(s){\n  if (!s) return null;\n  const m = s.trim().match(/^\\s*(BUY|SELL)\\s+([A-Z][A-Z0-9\\.]*)\\s*(\\d+)?\\s*$/i);\n  return m ? {\n    side: m[1].toUpperCase(),\n    symbol: m[2].toUpperCase(),\n    qty: m[3] ? Number(m[3]) : null\n  } : null;\n}\n\nconst j = $json;\nconst subject = hdr(j, 'Subject');\nconst from    = hdr(j, 'From');\nconst text    = j.textPlain || j.snippet || '';\n\nconst parsed = parseCmd(text) || parseCmd(subject) || null;\n\n// HARD GATE: only allow \"BUY KO 10\"\nlet cmd = null;\nif (parsed &&\n    parsed.side === 'BUY' &&\n    parsed.symbol === 'KO' &&\n    parsed.qty === 10) {\n  cmd = parsed;\n}\n\n// save to workflow static data (even if null, for debugging)\nconst sd = $getWorkflowStaticData('global');\nsd.cmd = cmd;\nsd.cmdEmail = { from, subject, preview: j.snippet || null };\n\nreturn {\n  json: {\n    parsed: cmd,         // will be null if not exactly BUY KO 10\n    from,\n    rejected: !cmd,      // handy flag\n    rawParsed: parsed    // so you can see what it *would* have been\n  }\n};\n"
+      },
+      "id": "8343805d-f4a6-418b-8894-7475f393f311",
+      "name": "ParseEmailCommand",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4096, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://127.0.0.1:5000/v1/api/iserver/secdef/search",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  symbol: $json.symbol,\n  secType: 'STK',\n  exchange: 'NYSE'\n}) }}\n",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "lowercaseHeaders": false
+        }
+      },
+      "id": "d608e11d-a333-45d8-a468-08cffced40fd",
+      "name": "FindConid",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-2976, 144]
+    },
+    {
+      "parameters": {
+        "url": "https://127.0.0.1:5000/v1/api/iserver/account/trades",
+        "options": {
+          "allowUnauthorizedCerts": true,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "neverError": false,
+              "responseFormat": "autodetect"
+            }
+          },
+          "pagination": {},
+          "timeout": 20000
+        }
+      },
+      "id": "5de68264-8ab4-46af-a71d-9552c8fc4606",
+      "name": "ReadTrades",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [-736, 144],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "ab4db12e-ff92-4955-84d3-0d8aa3566177",
+              "leftValue": "={{ $json.needRetry }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "8d939289-1252-4a68-8087-09704650656c",
+      "name": "IF_NeedRetry",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-64, 96]
+    },
+    {
+      "parameters": {
+        "amount": 10,
+        "unit": "seconds"
+      },
+      "id": "2c0fdb8f-4c79-48fe-83f0-29f636381a9f",
+      "name": "Wait10s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [608, 128],
+      "webhookId": "placeholder-1"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nfunction todayET() {\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone:'America/New_York', year:'numeric', month:'2-digit', day:'2-digit'\n  }).format(new Date());\n}\n\nconst first = $json.first;\nconst key   = todayET();\n\nsd.stateByDate = sd.stateByDate || {};\nsd.stateByDate[key] = { ...(sd.stateByDate[key]||{}),\n  firstEntryPrice: first.price,\n  firstEntryQty: first.qty,\n  conid: first.conid || sd.stateByDate[key]?.conid\n};\n\n// pull the trade_id we parked in AttachTradeId\nconst trade_id = ($json.trade_id) || sd.currentTrade?.trade_id || null;\nconst symbol   = ($json.symbol)    || sd.currentTrade?.symbol    || ($json.cfg?.symbol ?? 'KO');\n\nreturn {\n  json: {\n    price: first.price,\n    qty: first.qty,\n    conid: sd.stateByDate[key].conid,\n    trade_id,\n    symbol,\n    coid: first.coid ?? null,               \n    occurred_at: first.occurred_at ?? null, \n    // accountId may not be present here—no worries, CarryInitContext will carry it later\n  }\n};\n"
+      },
+      "id": "30737aeb-6356-4b5b-b0a0-70ee632e2f6f",
+      "name": "SaveFirstEntry",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 192]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://127.0.0.1:5000/v1/api/iserver/account/{{$json.accountId}}/orders",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ orders: [ $json.tpOrder ] }) }}\n",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "a19ad010-18d2-4bc1-84a0-ea49f07e42d4",
+      "name": "PlaceInitTP",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1280, 240]
+    },
+    {
+      "parameters": {
+        "amount": 3,
+        "unit": "seconds"
+      },
+      "id": "6577130d-500a-405f-804d-78cae93d3d2e",
+      "name": "CooldownInitTP",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1,
+      "position": [1504, 240],
+      "webhookId": "placeholder-2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nfunction todayET() {\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone: 'America/New_York',\n    year: 'numeric', month: '2-digit', day: '2-digit'\n  }).format(new Date());\n}\n\nfunction isStk(row) {\n  const secs = Array.isArray(row?.sections) ? row.sections : [];\n  return secs.some(s => String(s.secType).toUpperCase() === 'STK');\n}\nfunction isNyse(row) {\n  const hdr = String(row?.companyHeader || '');\n  const desc = String(row?.description || '');\n  return /\\bNYSE\\b/.test(hdr) || desc === 'NYSE';\n}\n\nconst items = $input.all();                 \nconst rows = items.flatMap(it => {\n  const j = it.json;\n  return Array.isArray(j) ? j : [j];\n}).filter(Boolean);\n\n// Choose NYSE equity; fall back to any equity; else first row\nconst pick = rows.find(r => isStk(r) && isNyse(r))\n           || rows.find(r => isStk(r))\n           || rows[0];\n\nif (!pick) {\n  throw new Error('secdef/search returned no rows');\n}\n\nconst conid = Number(pick.conid || pick.conidEx || pick.conidSecondary);\nif (!Number.isFinite(conid)) {\n  throw new Error('Could not resolve a numeric conid from secdef/search');\n}\n\n// Persist once per day\nconst key = todayET();\nsd.stateByDate = sd.stateByDate || {};\nsd.stateByDate[key] = { ...(sd.stateByDate[key] || {}), conid };\n\n// Emit a single normalized item downstream\nreturn [\n  {\n    json: {\n      conid,\n      venue: 'NYSE',\n      pickedHeader: pick.companyHeader || null\n    }\n  }\n];\n"
+      },
+      "id": "3670f4a5-de0f-42cc-b719-4a9a5b743268",
+      "name": "CollapseSecdefToNYSE",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2752, 144]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function etDate(){return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}\nfunction etHM(){const p=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date()).map(x=>[x.type,x.value]));return `${p.hour}:${p.minute}`}\n\nconst sd = $getWorkflowStaticData('global');\nconst today = etDate();\nsd.stateByDate = sd.stateByDate || {};\nsd.stateByDate[today] = sd.stateByDate[today] || {};\n\nconst cfg = sd.cfg || {};\nconst st  = sd.stateByDate[today];\n\nconst now = etHM();\nconst start = String(cfg.marketStartET||'09:45').slice(0,5);\nconst end   = String(cfg.marketEndET||'15:50').slice(0,5);\nconst withinTime = (now >= start && now <= end);\n\nconst wantBuy = (cfg.side || '').toUpperCase() === 'BUY';\nconst qty     = Number(cfg.trancheSize || 10);\nconst conid   = Number($json.conid);\nconst posZero = Number(st.totalPosition || 0) === 0; // optional guard\n\nconst already = !!st.initBuyPlaced;\n\nif (withinTime && wantBuy && !already && Number.isFinite(conid) && qty > 0 && posZero) {\n  const order = {\n    conid, secType: 'STK',\n    cOid: `n8n-init-${today}-${Date.now()}`,\n    side: 'BUY',\n    orderType: 'MKT',\n    tif: 'DAY',\n    quantity: qty\n  };\n  return { json: { place: true, order } };\n}\nreturn { json: { place: false } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2304, 144],
+      "id": "d30c97dd-5b68-49ad-8cf8-c6281f877b60",
+      "name": "ShouldPlaceInitBuy"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "62cd98b1-9f56-4083-8d56-f7a4d746b8d1",
+              "leftValue": "={{ $json.place }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-2080, 144],
+      "id": "899d01e8-fcde-45f1-b587-002160d7bc0a",
+      "name": "If_PlaceInitBuy"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://127.0.0.1:5000/v1/api/iserver/account/{{$json.accountId}}/orders",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ orders: [ $json.order ] }) }}\n",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-1408, 320],
+      "id": "dfb4b794-ea66-48d1-bba1-e983c7df1105",
+      "name": "PlaceInitBuy"
+    },
+    {
+      "parameters": {
+        "jsCode": "const sd=$getWorkflowStaticData('global');\nfunction etDate(){return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())}\nconst today=etDate();\nsd.stateByDate=sd.stateByDate||{};\nsd.stateByDate[today] = { ...(sd.stateByDate[today]||{}), initBuyPlaced: true };\nreturn { json: { initBuyPlaced: true } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1184, 320],
+      "id": "887e314d-7b8c-408b-818a-9305093ec164",
+      "name": "MarkInitBuyPlaced"
+    },
+    {
+      "parameters": {
+        "amount": 3
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [-960, 320],
+      "id": "e0260adb-391b-4a23-978c-01ad9cc1516c",
+      "name": "Cooldown3s",
+      "webhookId": "471c1656-a31d-4c3b-9197-b9037967df56"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "71d8ce3c-ea68-4f54-b96b-92a590698d3d",
+              "leftValue": "={{ !!$json.parsed }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "4e30e422-dd74-4f76-88a9-e1beeb53edf8",
+              "leftValue": "={{ ($json.from || '').toLowerCase().includes('') }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-3872, 320],
+      "id": "435d9dc1-2256-452c-8934-a8253869be06",
+      "name": "If_IsTradeCommand"
+    },
+    {
+      "parameters": {
+        "operation": "removeLabels",
+        "messageId": "={{ $json.id ?? $item(0).$node['Gmail Trigger'].json.id }}",
+        "labelIds": ["Label_3471539291349768342"]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [-3424, 224],
+      "id": "c8db2030-76fe-44c3-bab3-e431e6ea9ece",
+      "name": "RemoveLabel",
+      "webhookId": "1028feb4-1cbb-4585-9766-37fae1c223e9",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "szw76cI7RCjwd91z",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/** @type {any[]} */\nconst trades = [];\n\nfor (const it of $input.all()) {\n  const j = it.json;\n  if (Array.isArray(j)) {\n    for (const t of j) trades.push(t);\n  } else if (Array.isArray(j?.body)) {\n    for (const t of j.body) trades.push(t);\n  } else if (Array.isArray(j?.trades)) {\n    for (const t of j.trades) trades.push(t);\n  } else if (j && typeof j === 'object' && ('side' in j || 'symbol' in j || 'trade_time' in j)) {\n    trades.push(j); // single trade object\n  }\n}\n\nreturn [{ json: { trades } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-512, 96],
+      "id": "ea472dc9-b103-45c4-b347-6c0883b8f61a",
+      "name": "TradesNormalize"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nconst itemCfg =\n  ($json.cfg && typeof $json.cfg === 'object') ? $json.cfg :\n  (sd?.cfg || {});\n\nconst tpInc =\n  Number($json.tpIncrement) ||\n  Number(itemCfg.tpIncrement) ||\n  0.09;\n\nconst price = Number($json.price);\nconst qty   = Number($json.qty);\nconst conid = Number($json.conid);\nconst trade_id = String($json.trade_id || sd?.currentTrade?.trade_id || '');\n\nif (!trade_id) {\n  throw new Error('BuildInitTPOrder: missing trade_id');\n}\nif (!Number.isFinite(price) || !Number.isFinite(qty) || !Number.isFinite(conid)) {\n  throw new Error('BuildInitTPOrder: invalid price/qty/conid');\n}\n\nconst tpPrice = Number((price + tpInc).toFixed(2));\n\n// **Embed trade_id so we can match fills by coid**\nconst tp_coid = `n8n-tp-${trade_id}-${Date.now()}`;\n\nconst order = {\n  conid,\n  secType: 'STK',\n  cOid: tp_coid,\n  side: 'SELL',\n  orderType: 'LMT',\n  tif: 'GTC',\n  quantity: qty,\n  price: tpPrice,\n  lmtPrice: tpPrice,\n};\n\nreturn { json: { ...$json, tpOrder: order, tpPrice, tp_coid, trade_id } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [608, 320],
+      "id": "501d785d-8217-4799-a377-b2bbb642b612",
+      "name": "BuildInitTPOrder"
+    },
+    {
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "everyMinute"
+            }
+          ]
+        }
+      },
+      "id": "eadb21e0-bae3-46fe-be8d-e1da595d98c5",
+      "name": "Cron",
+      "type": "n8n-nodes-base.cron",
+      "typeVersion": 1,
+      "position": [-4544, 848]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nconst defaults = {\n  mode: 'paper',                 // 'paper' | 'live'\n  symbol: 'KO',\n  marketStartET: '09:45',\n  marketEndET:   '15:50',\n  trancheSize: 10,\n  tpIncrement: 0.09,\n  maxShares: 60,\n  dcaSteps: [\n    { offset: -0.60, qty: 10 },\n    { offset: -0.90, qty: 10 },\n    { offset: -1.20, qty: 10 },\n  ],\n  accountIdPaper: '',\n  accountIdLive:  '',\n};\n\n// force and keep\nsd.cfg = { ...(sd.cfg || {}), ...defaults };\n\n// accountId convenience\nif (!sd.accountId) {\n  sd.accountId = (sd.cfg.mode === 'live'\n    ? sd.cfg.accountIdLive\n    : sd.cfg.accountIdPaper) || '';\n}\n\nreturn { json: { cfg: sd.cfg, accountId: sd.accountId } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3872, 848],
+      "id": "b89be5fe-6d4f-45ef-8470-477c54a112d4",
+      "name": "EnsureConfig (Cron)"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nconst defaults = {\n  mode: 'paper',\n  symbol: 'KO',\n  marketStartET: '09:45',\n  marketEndET: '15:50',\n  trancheSize: 10,\n  tpIncrement: 0.09,\n  maxShares: 60,\n  dcaSteps: [\n    { offset: -0.60, qty: 10 },\n    { offset: -0.90, qty: 10 },\n    { offset: -1.20, qty: 10 },\n  ],\n  accountIdPaper: '',\n  accountIdLive: '',\n};\n\n// force\nsd.cfg = { ...(sd.cfg || {}), ...defaults };\n\nif (!sd.accountId) {\n  sd.accountId = (sd.cfg.mode === 'live'\n    ? sd.cfg.accountIdLive\n    : sd.cfg.accountIdPaper) || '';\n}\n\nif (sd.cmd?.side)   sd.cfg.side   = sd.cmd.side;\nif (sd.cmd?.symbol) sd.cfg.symbol = sd.cmd.symbol;\n\nreturn { json: { ...$json, accountId: sd.accountId, cfg: sd.cfg } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4320, 320],
+      "id": "5705a2f5-d88c-4608-9ce3-8f88a94efb24",
+      "name": "EnsureConfig (Gmail)"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\nconst cfgSym =\n  sd?.cfg?.symbol && typeof sd.cfg.symbol === 'string'\n    ? sd.cfg.symbol\n    : 'KO';\n\n// Prefer item symbol (from parsed email), then cfg, then KO\nconst symbol = $json.symbol ?? cfgSym;\n\nreturn { json: { ...$json, symbol } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3200, 224],
+      "id": "acbf6442-f7fb-423a-b5fd-68e685eca21c",
+      "name": "EnsureSymbol"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nfunction todayET(){\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone:'America/New_York',\n    year:'numeric', month:'2-digit', day:'2-digit'\n  }).format(new Date());\n}\n\nconst stKey = todayET();\nsd.stateByDate = sd.stateByDate || {};\nsd.stateByDate[stKey] = sd.stateByDate[stKey] || {};\nconst st = sd.stateByDate[stKey];\n\nif (sd.cmd?.side)   sd.cfg.side   = sd.cmd.side.toUpperCase();\nif (sd.cmd?.symbol) sd.cfg.symbol = sd.cmd.symbol.toUpperCase();\n\n// arm the day\nst.armed = true;\nst.initBuyPlaced ??= false;\n\nreturn { json: { ...$json, armed: true } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3648, 224],
+      "id": "11a6bd40-9616-4365-abe7-6e52eb731a79",
+      "name": "ApplyCmdToCfg"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nfunction todayET(){\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone:'America/New_York', year:'numeric', month:'2-digit', day:'2-digit'\n  }).format(new Date());\n}\n\nconst st = (sd.stateByDate && sd.stateByDate[todayET()]) || {};\nconst placed = !!st.initBuyPlaced;\n\n// Optional: simple retry cap\nsd.retryCount = sd.retryCount || 0;\nif (!placed) {\n  // no order placed yet → don't retry; route false\n  return { json: { canRetry: false, reason: 'no_init_buy_yet' } };\n}\nsd.retryCount++;\nif (sd.retryCount > 10) {\n  return { json: { canRetry: false, reason: 'max_retries' } };\n}\n\nreturn { json: { canRetry: true } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 0],
+      "id": "1d1c73af-5a18-4031-86a9-19b5177f41c1",
+      "name": "GateRetryOnPlaced"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "88973c09-0b7c-44f1-ba4c-2df1cca4dceb",
+              "leftValue": "={{ $json.canRetry }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [384, 0],
+      "id": "ebfc46d8-5d68-4594-abb5-25f369f2211e",
+      "name": "If_CanRetry"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nconst fromCfg = sd?.cfg?.mode === 'live'\n  ? sd?.cfg?.accountIdLive\n  : sd?.cfg?.accountIdPaper;\n\nconst accountId =\n  $json.accountId ||\n  sd?.accountId ||\n  fromCfg ||\n  '';\n\nif (!accountId) {\n  throw new Error('Missing accountId: seed sd.accountId in EnsureConfig or add accountId to the item before placing orders.');\n}\n\nreturn { json: { ...$json, accountId } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1632, 320],
+      "id": "f3deb672-7e11-4e49-921d-410c60a16e19",
+      "name": "InjectAccountId"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nconst fromCfg = sd?.cfg?.mode === 'live'\n  ? sd?.cfg?.accountIdLive\n  : sd?.cfg?.accountIdPaper;\n\nconst accountId =\n  $json.accountId ||\n  sd?.accountId ||\n  fromCfg ||\n  '';\n\nif (!accountId) {\n  throw new Error('Missing accountId: seed sd.accountId in EnsureConfig or add accountId to the item before placing orders.');\n}\n\nreturn { json: { ...$json, accountId } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [832, 320],
+      "id": "3b08cba8-f6bf-4467-960f-3a80f840ca0f",
+      "name": "InjectAccountId1"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function todayET() {\n  return new Intl.DateTimeFormat('en-CA', {\n    timeZone: 'America/New_York',\n    year: 'numeric', month: '2-digit', day: '2-digit'\n  }).format(new Date());\n}\n\nconst sd = $getWorkflowStaticData('global');\nconst stToday = (sd.stateByDate && sd.stateByDate[todayET()]) || {};\nconst wantConid = Number(stToday.conid || 0);\nconst wantSym   = String(sd.cfg?.symbol || 'KO').toUpperCase();\n\n/** @type {any[]} */\nconst trades = Array.isArray($json.trades) ? $json.trades : [];\n\nfunction isBuy(side) {\n  const s = String(side || '').toUpperCase();\n  return s === 'B' || s === 'BUY';\n}\n\nfunction tsMillis(t) {\n  if (t.trade_time_r != null) return Number(t.trade_time_r);\n  if (t.trade_time) {\n    const s = String(t.trade_time).replace(/(\\d{4})(\\d{2})(\\d{2})-/, '$1-$2-$3T');\n    return Date.parse(s);\n  }\n  const s2 = t.time || t.timestamp || t.date || null;\n  return s2 ? Date.parse(String(s2)) : NaN;\n}\n\nfunction isToday(ms) {\n  if (!Number.isFinite(ms)) return false;\n  const day = new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });\n  return day === todayET();\n}\n\nfunction matchesInstrument(t) {\n  const byConid = !!wantConid && Number(t.conid) === wantConid;\n  const sym = String(t.symbol || t.contract_description_1 || '').toUpperCase();\n  return byConid || sym === wantSym;\n}\n\nlet latest = null;\nlet latestMs = Number.NEGATIVE_INFINITY;\n\nfor (const t of trades) {\n  if (!isBuy(t.side)) continue;\n  if (!matchesInstrument(t)) continue;\n  const ms = tsMillis(t);\n  if (!isToday(ms)) continue;\n  if (Number.isFinite(ms) && ms > latestMs) {\n    latestMs = ms;\n    latest = {\n      price: Number(t.price),\n      qty: Number(t.size || t.quantity || t.qty || 0),\n      conid: Number(t.conid || t.conidEx || 0),\n      coid: String(t.coid || t.cOid || t.clientOrderId || ''),              \n      occurred_at: new Date(tsMillis(t)).toISOString(),                     \n      _ms: ms\n    };\n  }\n}\n\nif (!latest) {\n  return { json: { needRetry: true, sawCount: trades.length } };\n}\n\nreturn { json: { needRetry: false, first: latest } };\n"
+      },
+      "id": "12f0d33c-e896-4505-8213-e9aadad73d14",
+      "name": "PickLatestBuy",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-288, 96]
+    },
+    {
+      "parameters": {
+        "operation": "removeLabels",
+        "messageId": "={{ $json.id ?? $item(0).$node['Gmail Trigger'].json.id }}",
+        "labelIds": ["Label_3471539291349768342"]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [-3648, 416],
+      "id": "8e954e82-3e1e-45c8-a926-69a1bc4b0993",
+      "name": "RemoveLabel1",
+      "webhookId": "1028feb4-1cbb-4585-9766-37fae1c223e9",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "szw76cI7RCjwd91z",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\n// whatever EnsureConfig (Gmail/Cron) last wrote:\nconst cfg = sd.cfg || {};\n\nreturn {\n  json: {\n    ...$json,\n    cfg, // attach to item\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [384, 192],
+      "id": "41dc415b-cefb-46d4-a614-0cdbf6fa88e1",
+      "name": "InjectTradeConfig"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\n// take the client order id as our stable trade_id\nconst trade_id = ($json.order && $json.order.cOid) ? $json.order.cOid : `n8n-init-${Date.now()}`;\n\n// keep handy context for later nodes that may lose item JSON\nsd.currentTrade = {\n  trade_id,\n  symbol: ($json.cfg?.symbol ?? 'KO'),\n};\n\nreturn { json: { ...$json, trade_id } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1856, 320],
+      "id": "ce95b938-921c-4dbe-be76-a07240f9c29f",
+      "name": "AttachTradeId"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.trades\n  (trade_id, symbol, conid, account_id,\n   entry_price, entry_qty, tp_increment, max_shares,\n   remaining_qty, status)\nVALUES\n  ('{{ $json.trade_id }}',\n   '{{ ($json.symbol || \"\").toUpperCase() }}',\n   {{ $json.conid }},\n   '{{ $json.accountId }}',\n   {{ $json.price }},\n   {{ $json.qty }},\n   {{ $json.cfg.tpIncrement }},\n   {{ $json.cfg.maxShares }},\n   {{ $json.qty }},\n   'OPEN')\nON CONFLICT (trade_id) DO NOTHING;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1952, 144],
+      "id": "b4d59eb1-2e3b-4ddc-b313-80acef404c64",
+      "name": "InsertTrade",
+      "credentials": {
+        "postgres": {
+          "id": "H2EJRRylqhu4ULWV",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO public.executions\n  (trade_id, side, qty, price, occurred_at, source, coid)\nVALUES\n  ('{{ $json.trade_id }}',\n   'BUY',\n   {{ $json.qty }},\n   {{ $json.price }},\n   {{ $json.occurred_at ? `'${$json.occurred_at}'` : 'now()' }},\n   'IBKR',\n   {{ $json.coid ? `'${$json.coid}'` : 'NULL' }})\nON CONFLICT (coid) DO NOTHING;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1952, 336],
+      "id": "35f3e2e1-d52a-44bc-8c1c-0949006d895d",
+      "name": "InsertExecution (INIT BUY)",
+      "credentials": {
+        "postgres": {
+          "id": "H2EJRRylqhu4ULWV",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nreturn {\n  json: {\n    // prefer item values; fall back to sd.currentTrade\n    trade_id: $json.trade_id || sd.currentTrade?.trade_id,\n    symbol:   $json.symbol   || sd.currentTrade?.symbol || $json.cfg?.symbol || 'KO',\n    conid:    $json.conid,\n    accountId:$json.accountId,\n    price:    $json.price,\n    qty:      $json.qty,\n    tpPrice:  $json.tpPrice,\n    cfg:      $json.cfg,\n\n    // payload for the HTTP node\n    tpOrder:  $json.tpOrder,\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1056, 320],
+      "id": "78785c33-182e-4e13-a000-611d253e0099",
+      "name": "CarryInitContext"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map(it => ({ json: { ...it.json } }));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1504, 432],
+      "id": "a5ca5d4a-303e-4a1f-bd6f-fe2308620474",
+      "name": "ContextPass"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function money(v){ const n=Number(v); return Number.isFinite(n) ? n.toFixed(2) : String(v); }\nconst sym   = $json.symbol;\nconst qty   = $json.qty;\nconst px    = money($json.price);\nconst tp    = money($json.tpPrice);\nconst tid   = $json.trade_id;\nconst acct  = $json.accountId;\nconst max   = $json?.cfg?.maxShares;\nconst steps = Array.isArray($json?.cfg?.dcaSteps) ? $json.cfg.dcaSteps : [];\n\nconst subject = `${sym} • INIT BUY ${qty} @ ${px} • TP ${tp}`;\n\nconst dcaLines = steps.map(s => {\n  const off = (Number(s.offset) >= 0 ? '+' : '') + money(s.offset);\n  return `Offset ${off}, Quantity ${s.qty}`;\n}).join('<br>');\n\nconst html = `\n<div style=\"font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111\">\n  <div style=\"padding:12px 14px;border:1px solid #eee;border-radius:10px;background:#fff\">\n    <h2 style=\"margin:0 0 6px 0;font-size:18px\">${sym} — Initial Buy Placed</h2>\n    <div style=\"margin:0 0 10px 0;color:#666\">\n      <div><span style=\"color:#888\">Account:</span> <b>${acct}</b></div>\n      <div style=\"margin-top:2px\"><span style=\"color:#888\">Trade ID:</span> <code style=\"background:#f6f6f6;padding:2px 6px;border-radius:6px\">${tid}</code></div>\n    </div>\n\n    <div style=\"margin:10px 0\">\n      <div style=\"color:#666\">Filled BUY</div>\n      <div style=\"font-weight:600\">${qty} @ ${px}</div>\n    </div>\n\n    <div style=\"margin:10px 0\">\n      <div style=\"color:#666\">Placed TP</div>\n      <div style=\"font-weight:600\">${qty} @ ${tp} <span style=\"color:#999\">(GTC LMT)</span></div>\n    </div>\n\n    ${max != null ? `\n    <div style=\"margin:10px 0\">\n      <div style=\"color:#666\">Max Shares</div>\n      <div style=\"font-weight:600\">${max}</div>\n    </div>` : ''}\n\n    <div style=\"margin:10px 0\">\n      <div style=\"color:#666;margin-bottom:2px\">DCA Steps</div>\n      <div style=\"font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace\">\n        ${steps.length ? dcaLines : '<span style=\"color:#999\">None configured</span>'}\n      </div>\n    </div>\n\n    <div style=\"color:#8a8a8a;font-size:12px;margin-top:12px\">\n      Auto-notice from n8n. You’ll get a fill email when TP executes.\n    </div>\n  </div>\n</div>\n`;\n\nconst text =\n`${sym} — Initial Buy Placed\nAccount: ${acct}\nTrade ID: ${tid}\n\nFilled BUY: ${qty} @ ${px}\nPlaced TP : ${qty} @ ${tp} (GTC LMT)\n\n${max != null ? `Max shares: ${max}\\n` : ''}DCA steps:\n${steps.length ? steps.map(s => `  • Offset ${s.offset>=0?'+':''}${money(s.offset)}, Quantity ${s.qty}`).join('\\n') : '  • None'}\n`;\n\nreturn { json: { ...$json, email: { subject, html, text } } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1952, 528],
+      "id": "35d9f91e-ae02-41b3-86f9-939e18a636c3",
+      "name": "BuildInitEmail"
+    },
+    {
+      "parameters": {
+        "jsCode": "// All rows (DB open trades) on input 0 (this may contain duplicates per trade due to LEFT JOIN)\nconst rows = $input.all(0).map(i => i.json);\n\n// Unique trade_ids for convenience\nconst tradeIds = Array.from(new Set(rows.map(r => String(r.trade_id))));\n\n// Coid prefix per trade (works for init TP + DCA TPs we generate)\nconst prefixes = tradeIds.map(tid => `n8n-tp-${tid}-`);\n\n// Known TP coids that already exist on DCA steps (exact coid match wins)\nconst knownTPCoids = Array.from(\n  new Set(rows.map(r => r.tp_coid).filter(Boolean).map(String))\n);\n\n// Build per-trade step metadata so the matcher can reason about DCA TPs\n// We collect: offset, qty, dca_fill_price, tp_coid, executed_buy_at, placed_tp_at\nconst stepsByTradeMap = new Map();\nconst coidToTrade = new Map();\n\nfor (const r of rows) {\n  const tid = String(r.trade_id);\n  if (!stepsByTradeMap.has(tid)) stepsByTradeMap.set(tid, []);\n\n  // Only push a step row if we have at least offset/qty (others may be null until filled/placed)\n  const off = (r.dca_offset != null) ? Number(r.dca_offset) : null;\n  const qty = (r.qty != null) ? Number(r.qty) : null;\n\n  if (Number.isFinite(off) || Number.isFinite(qty) || r.tp_coid != null || r.dca_fill_price != null) {\n    const step = {\n      dca_offset: Number.isFinite(off) ? off : null,\n      qty: Number.isFinite(qty) ? qty : null,\n      dca_fill_price: (r.dca_fill_price != null) ? Number(r.dca_fill_price) : null,\n      tp_coid: r.tp_coid ? String(r.tp_coid) : null,\n      executed_buy_at: r.executed_buy_at || null,\n      placed_tp_at: r.placed_tp_at || null,\n    };\n    stepsByTradeMap.get(tid).push(step);\n    if (step.tp_coid) coidToTrade.set(step.tp_coid, tid);\n  }\n}\n\n// Carry full openTrades context so matcher can check conid, entry_price, etc.\nconst byTrade = new Map();\nfor (const r of rows) {\n  const tid = String(r.trade_id);\n  if (!byTrade.has(tid)) {\n    byTrade.set(tid, {\n      trade_id: tid,\n      symbol: String(r.symbol || ''),\n      conid: Number(r.conid),\n      account_id: String(r.account_id || ''),\n      entry_price: r.entry_price != null ? Number(r.entry_price) : null,\n      entry_qty: r.entry_qty != null ? Number(r.entry_qty) : null,\n      tp_increment: r.tp_increment != null ? Number(r.tp_increment) : null,\n      remaining_qty: r.remaining_qty != null ? Number(r.remaining_qty) : null,\n      opened_at: r.opened_at || null,\n    });\n  }\n}\n\nconst openTrades = Array.from(byTrade.values());\n\n// Set a long lookback if you expect fills much later (minutes)\nconst lookbackMinutes = 1440; // 24h. Tune as you like.\n\nconst sd = $getWorkflowStaticData('global');\nsd.tpCtrl = {\n  tradeIds,\n  prefixes,\n  knownTPCoids,\n  openTrades,\n  stepsByTrade: Object.fromEntries(stepsByTradeMap),\n  coidToTrade: Object.fromEntries(coidToTrade),\n  lookbackMinutes,\n};\n\nreturn [{ json: sd.tpCtrl }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3424, 752],
+      "id": "a548d21b-608a-4937-8f3e-b83db8d8c784",
+      "name": "BuildTPQueryBatch"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  t.trade_id,\n  t.symbol,\n  t.conid,\n  t.account_id,\n  t.entry_price,\n  t.entry_qty,\n  t.tp_increment,\n  t.max_shares,\n  t.remaining_qty,\n  t.opened_at,\n  ds.tp_coid\nFROM public.trades t\nLEFT JOIN public.trade_dcasteps ds\n  ON ds.trade_id = t.trade_id\nWHERE t.status = 'OPEN'\n  AND t.remaining_qty > 0;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-3648, 752],
+      "id": "4fb29dfc-8b65-4aa4-a92b-719f27d727f9",
+      "name": "LoadOpenTradeIdsWithTPCoids",
+      "credentials": {
+        "postgres": {
+          "id": "H2EJRRylqhu4ULWV",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://127.0.0.1:5000/v1/api/iserver/account/trades",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-3200, 752],
+      "id": "c7887b17-1c52-436d-b2e4-de1aaf0aa48d",
+      "name": "ReadAccountTrades"
+    },
+    {
+      "parameters": {
+        "jsCode": "function toMs(t) {\n  if (t?.trade_time_r != null) return Number(t.trade_time_r);\n  if (t?.trade_time) {\n    const s = String(t.trade_time).replace(/(\\d{4})(\\d{2})(\\d{2})-/, '$1-$2-$3T');\n    const ms = Date.parse(s); if (Number.isFinite(ms)) return ms;\n  }\n  if (t?.time) return Date.parse(String(t.time));\n  if (t?.timestamp) return Date.parse(String(t.timestamp));\n  return NaN;\n}\nfunction isSell(side) { const s = String(side||'').toUpperCase(); return s === 'S' || s === 'SELL'; }\nfunction isTodayET(ms) {\n  if (!Number.isFinite(ms)) return false;\n  const d = new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });\n  const today = new Intl.DateTimeFormat('en-CA', {\n    timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit'\n  }).format(new Date());\n  return d === today;\n}\nfunction near(a, b, eps = 0.005) {\n  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;\n  return Math.abs(a - b) <= eps;\n}\nfunction toMsET(ts) {\n  if (!ts) return NaN;\n  const ms = Date.parse(ts);\n  return Number.isFinite(ms) ? ms : NaN;\n}\n\nconst sd = $getWorkflowStaticData('global');\nconst ctrl = sd.tpCtrl || {};\n\nconst tradeIds     = Array.isArray(ctrl.tradeIds) ? ctrl.tradeIds : [];\nconst prefixes     = Array.isArray(ctrl.prefixes) ? ctrl.prefixes : [];\nconst knownTPCoids = new Set((ctrl.knownTPCoids || []).map(String));\nconst stepsByTrade = ctrl.stepsByTrade || {}; // { trade_id: [{qty, dca_fill_price, tp_coid, ...}, ...] }\nconst coidToTrade  = ctrl.coidToTrade  || {}; // { tp_coid: trade_id }\nconst openTrades   = Array.isArray(ctrl.openTrades) ? ctrl.openTrades : [];\nconst openById     = new Map(openTrades.map(t => [String(t.trade_id), t]));\n\nconst lookbackMin = Number(ctrl.lookbackMinutes || 30);\nconst earliestMs  = Date.now() - lookbackMin * 60000;\n\n// flatten IBKR payload\nconst httpItems = $input.all(0);\nconst rowsRaw = httpItems.flatMap(i => {\n  const j = i.json;\n  if (Array.isArray(j?.trades)) return j.trades;\n  if (Array.isArray(j?.body))   return j.body;\n  if (Array.isArray(j))         return j;\n  return j ? [j] : [];\n});\n\n// collect today's SELLs inside lookback\nconst sells = [];\nfor (const t of rowsRaw) {\n  if (!isSell(t.side)) continue;\n  const ms = toMs(t);\n  if (!isTodayET(ms)) continue;\n  if (ms < earliestMs) continue;\n\n  const qty   = Number(t.size ?? t.quantity ?? t.qty ?? 0);\n  const px    = Number(t.price ?? t.fillPrice ?? t.avgPrice ?? NaN);\n  const coid  = String(t.coid || t.cOid || t.clientOrderId || '').trim();\n  const conid = Number(t.conid ?? t.conidEx ?? NaN);\n\n  if (!qty || !Number.isFinite(px)) continue;\n\n  sells.push({\n    ms,\n    occurred_at: new Date(ms).toISOString(),\n    qty,\n    price: Number(px.toFixed(4)),\n    coid,\n    conid,\n    raw: t\n  });\n}\n\nconst out = [];\n\n// ---------- 1) STRICT coid-prefix match (init or DCA TPs), require after opened_at ----------\nfor (const s of sells) {\n  if (!s.coid) continue;\n\n  let trade_id = null;\n\n  // a) our canonical prefix n8n-tp-<trade_id>-\n  const m = s.coid.match(/^n8n\\-tp\\-([^-]+)\\-/);\n  if (m) trade_id = m[1];\n\n  // b) or exact known tp_coid stored on a DCA step\n  if (!trade_id && knownTPCoids.has(s.coid) && coidToTrade[s.coid]) {\n    trade_id = String(coidToTrade[s.coid]);\n  }\n\n  if (!trade_id) continue;\n  if (!tradeIds.includes(trade_id)) continue;\n\n  const ot = openById.get(trade_id);\n  if (!ot) continue;\n\n  const openedMs = toMsET(ot.opened_at);\n  if (Number.isFinite(openedMs) && s.ms < openedMs) continue; // must be after open\n\n  out.push({ json: {\n    trade_id,\n    filled_qty: s.qty,\n    price: s.price,\n    occurred_at: s.occurred_at,\n    coid: s.coid,\n    source: 'IBKR',\n  }});\n}\n\n// If we have strict matches, return only those\nif (out.length) return out;\n\n// ---------- 2) Fallback: INIT TP by (entry_price + inc), qty == entry_qty, same conid ----------\nfor (const s of sells) {\n  for (const ot of openTrades) {\n    const trade_id = String(ot.trade_id);\n    if (!tradeIds.includes(trade_id)) continue;\n\n    const openedMs = toMsET(ot.opened_at);\n    if (Number.isFinite(openedMs) && s.ms < openedMs) continue;\n\n    const entry = Number(ot.entry_price);\n    const inc   = Number(ot.tp_increment);\n    const expectedPx = Number((entry + inc).toFixed(2));\n\n    const qtyOk   = Number.isFinite(ot.entry_qty) && s.qty === Number(ot.entry_qty);\n    const conidOk = Number.isFinite(s.conid) && Number.isFinite(ot.conid) && s.conid === Number(ot.conid);\n\n    if (conidOk && qtyOk && Number.isFinite(entry) && Number.isFinite(inc) && near(s.price, expectedPx, 0.005)) {\n      out.push({ json: {\n        trade_id,\n        filled_qty: s.qty,\n        price: s.price,\n        occurred_at: s.occurred_at,\n        coid: s.coid || null,\n        source: 'IBKR',\n      }});\n    }\n  }\n}\n\n// If we matched any init-TP fallbacks, return them\nif (out.length) return out;\n\n// ---------- 3) Fallback: DCA TP by (dca_fill_price + inc) per step, qty == step qty, same conid ----------\nfor (const s of sells) {\n  for (const ot of openTrades) {\n    const trade_id = String(ot.trade_id);\n    if (!tradeIds.includes(trade_id)) continue;\n\n    const steps = Array.isArray(stepsByTrade[trade_id]) ? stepsByTrade[trade_id] : [];\n    if (!steps.length) continue;\n\n    const openedMs = toMsET(ot.opened_at);\n    if (Number.isFinite(openedMs) && s.ms < openedMs) continue;\n\n    const inc = Number(ot.tp_increment);\n\n    for (const step of steps) {\n      const stepQty  = Number(step.qty);\n      const fillPx   = Number(step.dca_fill_price);\n      const stepCoid = step.tp_coid ? String(step.tp_coid) : null;\n\n      const qtyOk   = Number.isFinite(stepQty) && s.qty === stepQty;\n      const conidOk = Number.isFinite(s.conid) && Number.isFinite(ot.conid) && s.conid === Number(ot.conid);\n\n      // price target off the DCA fill price (if we have it), otherwise skip this fallback for this step\n      if (!Number.isFinite(fillPx) || !Number.isFinite(inc)) continue;\n      const expectedPx = Number((fillPx + inc).toFixed(2));\n\n      if (conidOk && qtyOk && near(s.price, expectedPx, 0.005)) {\n        out.push({ json: {\n          trade_id,\n          filled_qty: s.qty,\n          price: s.price,\n          occurred_at: s.occurred_at,\n          coid: s.coid || stepCoid || null,\n          source: 'IBKR',\n        }});\n      }\n    }\n  }\n}\n\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2976, 752],
+      "id": "ed44668b-737c-40e0-84ed-11dd7df2a0b9",
+      "name": "TPFillMatch"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "BEGIN;\n\n-- 1) record the SELL execution if new\nINSERT INTO public.executions (trade_id, side, qty, price, occurred_at, source, coid)\nVALUES ('{{ $json.trade_id }}', 'SELL', {{ $json.filled_qty }}, {{ $json.price }},\n        '{{ $json.occurred_at }}', '{{ $json.source }}', {{ $json.coid ? `'${$json.coid}'` : 'NULL' }})\nON CONFLICT (coid) DO NOTHING;\n\n-- 2) decrement remaining\nUPDATE public.trades\nSET remaining_qty = GREATEST(remaining_qty - {{ $json.filled_qty }}, 0)\nWHERE trade_id = '{{ $json.trade_id }}'\n  AND status = 'OPEN';\n\n-- 3) close if zero\nUPDATE public.trades\nSET status = 'CLOSED', closed_at = now()\nWHERE trade_id = '{{ $json.trade_id }}'\n  AND status = 'OPEN'\n  AND remaining_qty = 0;\n\nCOMMIT;\n\n-- Emit the context we need for the email builder:\nSELECT\n  '{{ $json.trade_id }}'::text    AS trade_id,\n  {{ $json.filled_qty }}::int     AS filled_qty,\n  {{ $json.price }}::numeric      AS price,\n  '{{ $json.occurred_at }}'::timestamptz AS occurred_at,\n  {{ $json.coid ? `'${$json.coid}'` : 'NULL' }}::text AS coid,\n  '{{ $json.source }}'::text      AS source;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-2752, 752],
+      "id": "aefad2e2-b1ab-4008-888e-53984d960338",
+      "name": "ApplyTPFill",
+      "credentials": {
+        "postgres": {
+          "id": "H2EJRRylqhu4ULWV",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT\n  t.trade_id,\n  t.symbol,\n  t.conid,\n  t.account_id,\n  t.entry_price,\n  t.entry_qty,\n  t.tp_increment,\n  t.max_shares,\n  t.remaining_qty,\n  COALESCE(\n    json_agg(s.dca_offset ORDER BY s.dca_offset)\n      FILTER (WHERE s.dca_offset IS NOT NULL),\n    '[]'::json\n  ) AS activated_offsets\nFROM public.trades t\nLEFT JOIN public.trade_dcasteps s\n  ON s.trade_id = t.trade_id\nWHERE t.status = 'OPEN'\nGROUP BY\n  t.trade_id, t.symbol, t.conid, t.account_id,\n  t.entry_price, t.entry_qty, t.tp_increment,\n  t.max_shares, t.remaining_qty\nORDER BY t.opened_at ASC;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-3424, 944],
+      "id": "0d88bd75-4405-42c7-a258-40787ca9dba7",
+      "name": "LoadOpenTradesForDCA",
+      "credentials": {
+        "postgres": {
+          "id": "H2EJRRylqhu4ULWV",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// aggregate open trades and unique conids\nconst trades = $input.all(0).map(i => i.json);\nconst byTrade = new Map();\nfor (const t of trades) byTrade.set(String(t.trade_id), t);\n\n// keep for later stages\nconst sd = $getWorkflowStaticData('global');\nsd.dca = sd.dca || {};\nsd.dca.openTrades = Object.fromEntries(byTrade);\n\n// gather unique conids\nconst conids = Array.from(new Set(trades.map(t => Number(t.conid)).filter(Number.isFinite)));\n\n// request last,bid,ask\nreturn [{ json: { conids, fields: '31,84,86' } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3200, 944],
+      "id": "68575e38-b56b-415b-b39c-a18f91adfe60",
+      "name": "BuildSnapshotRequest"
+    },
+    {
+      "parameters": {
+        "url": "https://127.0.0.1:5000/v1/api/iserver/marketdata/snapshot",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "conids",
+              "value": "={{ $json.conids.join(',') }}"
+            },
+            {
+              "name": "fields",
+              "value": "={{ $json.fields }}"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-2976, 944],
+      "id": "c10c6406-1629-4e73-ab70-6f69c95d511a",
+      "name": "SnapshotLast (DCA)"
+    },
+    {
+      "parameters": {
+        "jsCode": "// snapshot returns rows (sometimes nested under body)\nconst http = $input.all(0).map(i => i.json);\nconst rows = Array.isArray(http?.[0]) ? http[0]\n          : Array.isArray(http?.[0]?.body) ? http[0].body\n          : http;\n\n// index prices by conid with robust last fallback\nconst priceByConid = new Map();\nfor (const r of rows) {\n  const conid = Number(r.conid);\n  const last  = Number(r['31']);\n  const bid   = Number(r['84']);\n  const ask   = Number(r['86']);\n\n  let effLast = NaN;\n  if (Number.isFinite(last)) effLast = last;\n  else if (Number.isFinite(bid) && Number.isFinite(ask)) effLast = +(((bid + ask) / 2).toFixed(2));\n  else if (Number.isFinite(bid)) effLast = bid;\n  else if (Number.isFinite(ask)) effLast = ask;\n\n  if (Number.isFinite(conid) && Number.isFinite(effLast)) {\n    priceByConid.set(conid, effLast);\n  }\n}\n\n// pull openTrades saved earlier\nconst sd = $getWorkflowStaticData('global');\nconst open = sd.dca?.openTrades || {};\n\n// emit one item per trade enriched with price (may be null if no tick)\nconst out = [];\nfor (const [trade_id, t] of Object.entries(open)) {\n  const last = priceByConid.get(Number(t.conid));\n  out.push({ json: { ...t, last } });\n}\nreturn out;\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2752, 944],
+      "id": "d7dd1e51-1a99-4230-acdb-b80985a576b5",
+      "name": "JoinPricesWithTrades"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const row = $json;\nconst sd = $getWorkflowStaticData('global');\nconst cfgSteps = Array.isArray(sd?.cfg?.dcaSteps) ? sd.cfg.dcaSteps : [];\n\nconst entry  = Number(row.entry_price);\nconst last   = Number(row.last);\nconst remain = Number(row.remaining_qty);\nconst max    = Number(row.max_shares);\nconst taken  = new Set((Array.isArray(row.activated_offsets) ? row.activated_offsets : []).map(Number));\n\nif (!Number.isFinite(entry) || !Number.isFinite(last)) {\n  return { json: { ...row, dca: null, skip: true, reason: 'no_marketdata' } };\n}\nif (!cfgSteps.length) {\n  return { json: { ...row, dca: null, skip: true, reason: 'no_steps' } };\n}\n// don’t DCA if bouncing above entry\nif (last > entry) {\n  return { json: { ...row, dca: null, skip: true, reason: 'rebounded_above_entry' } };\n}\n\nlet chosen = null;\nfor (const s of cfgSteps) {\n  const off = Number(s.offset);\n  const qty = Number(s.qty);\n  if (!Number.isFinite(off) || !Number.isFinite(qty) || qty <= 0) continue;\n  if (taken.has(off)) continue;\n\n  const trigger = entry + off;\n  const wouldHold = remain + qty;\n\n  if (last <= trigger && (!Number.isFinite(max) || wouldHold <= max)) {\n    chosen = { offset: off, qty };\n    break;\n  }\n}\n\nif (!chosen) {\n  return { json: { ...row, dca: null, skip: true, reason: 'no_step_fired' } };\n}\nreturn { json: { ...row, dca: chosen, skip: false } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2528, 944],
+      "id": "3266e811-511f-4909-b9fb-cd6ec10791e8",
+      "name": "DcaDecidePerTrade"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "288f22c6-a67e-4625-a08a-21899935ae7d",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-2304, 944],
+      "id": "cef580f1-4273-4814-8577-2172e365be36",
+      "name": "If_ShouldPlaceDca"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// BuildDcaBuyOrder (replace)\nconst row = $json;\nconst entry = Number(row.entry_price);\nconst off   = Number(row?.dca?.offset);\nconst qty   = Number(row?.dca?.qty);\nconst last  = Number(row?.last);\n\nif (!Number.isFinite(entry) || !Number.isFinite(off) || !Number.isFinite(qty) || qty <= 0) {\n  return { json: { ...row, skip: true, reason: 'bad dca params' } };\n}\n\n// target trigger and a tiny slippage cushion (optional)\nconst trigger = +(entry + off).toFixed(2);     // e.g., 68.95 + (-0.03) = 68.92\nconst slip    = 0.00;                           // set to 0.01 if you want a 1¢ cushion\n\n// build a LIMIT BUY that will only hit at/below trigger (+slip)\nconst limitPx = +(trigger + slip).toFixed(2);\n\nconst cOid = `n8n-dca-${row.trade_id}-${off}-${Date.now()}`;\n\nreturn {\n  json: {\n    ...row,\n    dcaBuyOrder: {\n      conid: Number(row.conid),\n      secType: 'STK',\n      cOid,\n      side: 'BUY',\n      orderType: 'LMT',\n      tif: 'DAY',\n      quantity: qty,\n      price: limitPx,\n      lmtPrice: limitPx\n    },\n    dca_coid: cOid,\n    dca_trigger: trigger,\n    dca_limit: limitPx\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2080, 944],
+      "id": "28381b26-c741-4251-b02a-cfcada5c6faf",
+      "name": "BuildDcaBuyOrder"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://127.0.0.1:5000/v1/api/iserver/account/{{$json.account_id}}/orders",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ orders: [ $json.dcaBuyOrder ] }) }}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-736, 928],
+      "id": "7825cf18-066c-4607-9506-9e92f0c178ea",
+      "name": "PlaceDcaBuy",
+      "retryOnFail": true,
+      "maxTries": 5
+    },
+    {
+      "parameters": {
+        "url": "https://127.0.0.1:5000/v1/api/iserver/account/trades",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-288, 832],
+      "id": "20cca23b-ab9b-43a9-ba74-5fa9c6828f93",
+      "name": "ReadAccountTrades (DCA Fill)",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// ---------- helpers ----------\nfunction toMs(t){\n  if (t?.trade_time_r != null) return Number(t.trade_time_r);\n  if (t?.trade_time){\n    const s = String(t.trade_time).replace(/(\\d{4})(\\d{2})(\\d{2})-/, '$1-$2-$3T');\n    const ms = Date.parse(s); if (Number.isFinite(ms)) return ms;\n  }\n  if (t?.time)       return Date.parse(String(t.time));\n  if (t?.timestamp)  return Date.parse(String(t.timestamp));\n  return NaN;\n}\nfunction isBuy(side){ const s = String(side||'').toUpperCase(); return s==='B'||s==='BUY'; }\nfunction isTodayET(ms){\n  if (!Number.isFinite(ms)) return false;\n  const dStr = new Date(ms).toLocaleDateString('en-CA', { timeZone: 'America/New_York' });\n  const todayStr = new Intl.DateTimeFormat('en-CA', {\n    timeZone: 'America/New_York', year:'numeric', month:'2-digit', day:'2-digit'\n  }).format(new Date());\n  return dStr === todayStr;\n}\n\n// ---------- inputs & caches ----------\nconst sd = $getWorkflowStaticData('global');\n\nconst trade_id = String($json.trade_id || sd.lastDcaTradeId || '');\nif (!trade_id) return { dcaFill: null, skip: true, reason: 'no_trade_id' };\n\nconst stamp = sd.dcaPlacements?.[trade_id] || $json.dca_stamp || null;\nif (!stamp)   return { dcaFill: null, skip: true, reason: 'no_placement_record' };\n\nconst placedMs  = Number(stamp.placed_ms);\nconst conidWant = Number($json.conid ?? stamp.conid ?? NaN);\nconst qtyWant   = Number($json?.dca?.qty ?? stamp.qty ?? NaN);\nconst limitPx   = Number($json?.dca_limit ?? NaN);\nconst offWant   = Number($json?.dca?.offset ?? stamp.offset ?? NaN);\n\n// tolerances\nconst msFloor = Number.isFinite(placedMs) ? placedMs - 2000 : NaN;   // ≥ placedMs - 2s\nconst pxCeil  = Number.isFinite(limitPx) ? (limitPx + 0.01) : Infinity; // never above our limit (+1¢)\n\n// use cached rows only (set by CacheAccountTrades (DCA))\nconst rows = Array.isArray(sd.acctTradesRows) ? sd.acctTradesRows : [];\nif (!rows.length) return { ...$json, dcaFill: null, skip: true, reason: 'no_account_trades_rows' };\n\n// ---------- select best match ----------\nlet best = null;\nlet bestScore = -1;\n\nfor (const t of rows){\n  if (!isBuy(t.side)) continue;\n\n  const ms = toMs(t);\n  if (!isTodayET(ms)) continue;\n  if (Number.isFinite(msFloor) && ms < msFloor) continue;\n\n  const tConid = Number(t.conid ?? t.conidEx ?? NaN);\n  if (!(Number.isFinite(conidWant) && Number.isFinite(tConid) && tConid === conidWant)) continue;\n\n  const qty = Number(t.size ?? t.quantity ?? t.qty ?? 0);\n  if (!qty || (Number.isFinite(qtyWant) && qty !== qtyWant)) continue;\n\n  const px = Number(t.price ?? t.fillPrice ?? t.avgPrice ?? NaN);\n  if (!Number.isFinite(px)) continue;\n  if (px > pxCeil) continue; // guard: never above our limit\n\n  const coid = String(t.coid || t.cOid || t.clientOrderId || '').trim();\n  const needPrefix = Number.isFinite(offWant)\n    ? `n8n-dca-${trade_id}-${offWant}`\n    : `n8n-dca-${trade_id}-`;\n  const hasPrefix = coid.startsWith(needPrefix);\n\n  const score = (hasPrefix ? 1 : 0) * 1e12 + ms; // prefix wins; else latest\n  if (score > bestScore){\n    bestScore = score;\n    best = {\n      price: Number(px.toFixed(4)),\n      qty,\n      coid: coid || null,\n      occurred_at: new Date(ms).toISOString(),\n      source: 'IBKR',\n    };\n  }\n}\n\nif (!best)   return { ...$json, dcaFill: null, skip: true, reason: 'no_matching_dca_fill' };\nreturn { ...$json, dcaFill: best, skip: false };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [384, 848],
+      "id": "33e0623b-73a6-4122-a762-2c76b4f30a3a",
+      "name": "PickLatestDcaFillForThisTrade"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "d233bc34-5372-4055-bdad-e93f70d90a9a",
+              "leftValue": "={{ $json.skip }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [608, 848],
+      "id": "9d413d5f-5745-4368-b5cb-8271efe60294",
+      "name": "If_HaveDcaFill"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "// BuildDcaTPOrder (replace)\nconst sd = $getWorkflowStaticData('global');\nconst inc = Number(sd?.cfg?.tpIncrement ?? $json.tp_increment ?? 0.5);\n\nconst fill = $json.dcaFill;\nconst accountId = $json.account_id || sd.accountId || '';\nconst conid = Number($json.conid);\nconst qty   = Number(fill?.qty);\n\nif (!accountId || !Number.isFinite(conid) || !qty) {\n  throw new Error('Missing accountId/conid/qty for DCA TP');\n}\n\n// TP off actual fill\nconst tpPrice = Number((Number(fill.price) + inc).toFixed(2));\nconst tp_coid = `n8n-tp-${$json.trade_id}-${Date.now()}`;\n\nreturn {\n  json: {\n    ...$json,\n    dca_tp_order: {\n      conid, secType: 'STK',\n      cOid: tp_coid, side: 'SELL',\n      orderType: 'LMT', tif: 'GTC',\n      quantity: qty, price: tpPrice, lmtPrice: tpPrice,\n    },\n    dca_tp_price: tpPrice,\n    tp_coid,\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [832, 848],
+      "id": "1a0aed60-808d-4ba5-bbda-7dee052431a3",
+      "name": "BuildDcaTPOrder"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://127.0.0.1:5000/v1/api/iserver/account/{{$json.account_id ?? $json.accountId}}/orders",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ orders: [ $json.dca_tp_order ] }) }}",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1056, 784],
+      "id": "40806a9b-2a56-46db-9763-374057da8992",
+      "name": "PlaceDcaTP",
+      "retryOnFail": true,
+      "maxTries": 5
+    },
+    {
+      "parameters": {
+        "amount": 2
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1280, 784],
+      "id": "28b6f84d-d6e0-49bc-babb-49630d11771a",
+      "name": "Cooldown_DCA_TP (2s)",
+      "webhookId": "1bfdaeb8-fbc2-4319-8e03-0426f3733e5b"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "BEGIN;\n\n-- 1) log the BUY execution (idempotent by coid if we have it)\nINSERT INTO public.executions (trade_id, side, qty, price, occurred_at, source, coid)\nVALUES (\n  '{{ $json.trade_id }}',\n  'BUY',\n  {{ $json.dcaFill.qty }},\n  {{ $json.dcaFill.price }},\n  '{{ $json.dcaFill.occurred_at }}',\n  '{{ $json.dcaFill.source || \"IBKR\" }}',\n  {{ $json.dcaFill.coid ? `'${$json.dcaFill.coid}'` : 'NULL' }}\n)\nON CONFLICT (coid) DO NOTHING;\n\n-- 2) complete the step: fill price/time + TP we just placed\nUPDATE public.trade_dcasteps\nSET\n  dca_fill_price = {{ $json.dcaFill.price }},\n  executed_buy_at = '{{ $json.dcaFill.occurred_at }}',\n  tp_price = {{ $json.dca_tp_price }},\n  tp_coid = '{{ $json.tp_coid }}',\n  placed_tp_at = now()\nWHERE trade_id = '{{ $json.trade_id }}'\n  AND ROUND(dca_offset::numeric, 3) = ROUND({{ $json.dca.offset }}, 3);\n\n-- 3) bump the parent trade remaining\nUPDATE public.trades\nSET remaining_qty = remaining_qty + {{ $json.dcaFill.qty }}\nWHERE trade_id = '{{ $json.trade_id }}'\n  AND status = 'OPEN';\n\nCOMMIT;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [1728, 752],
+      "id": "5ab3da32-3b43-46b3-b9e2-e68566bc9cc4",
+      "name": "RecordDcaAndFill",
+      "credentials": {
+        "postgres": {
+          "id": "H2EJRRylqhu4ULWV",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function money(v){ const n=Number(v); return Number.isFinite(n) ? n.toFixed(2) : String(v); }\n\nconst sym   = $json.symbol;\nconst qty   = Number($json.dcaFill?.qty || $json.dca?.qty || 0);\nconst px    = money($json.dcaFill?.price);\nconst tp    = money($json.dca_tp_price);\nconst tid   = $json.trade_id;\nconst acct  = $json.account_id || $json.accountId;\n\nconst subject = `${sym} • DCA BUY ${qty} @ ${px} • TP ${tp}`;\n\nconst html = `\n<div style=\"font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111\">\n  <div style=\"padding:12px 14px;border:1px solid #eee;border-radius:10px;background:#fff\">\n    <h2 style=\"margin:0 0 6px 0;font-size:18px\">${sym} — DCA Buy Placed</h2>\n    <div style=\"margin:0 0 10px 0;color:#666\">\n      <div><span style=\"color:#888\">Account:</span> <b>${acct}</b></div>\n      <div style=\"margin-top:2px\"><span style=\"color:#888\">Trade ID:</span> <code style=\"background:#f6f6f6;padding:2px 6px;border-radius:6px\">${tid}</code></div>\n    </div>\n\n    <div style=\"margin:10px 0\">\n      <div style=\"color:#666\">Filled BUY (DCA)</div>\n      <div style=\"font-weight:600\">${qty} @ ${px}</div>\n    </div>\n\n    <div style=\"margin:10px 0\">\n      <div style=\"color:#666\">Placed TP</div>\n      <div style=\"font-weight:600\">${qty} @ ${tp} <span style=\"color:#999\">(GTC LMT)</span></div>\n    </div>\n\n    <div style=\"color:#8a8a8a;font-size:12px;margin-top:12px\">\n      Auto-notice from n8n (DCA). You’ll get a fill email when TP executes.\n    </div>\n  </div>\n</div>\n`;\n\nreturn { json: { ...$json, email: { subject, html } } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1728, 944],
+      "id": "ed4e3949-59d6-4181-a083-ecdfa1c321dd",
+      "name": "BuildDcaEmail"
+    },
+    {
+      "parameters": {
+        "sendTo": "",
+        "subject": "={{ $json.email.subject }}",
+        "message": "={{ $json.email.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [1952, 944],
+      "id": "51610184-8f97-4c77-b06d-241cb33c8455",
+      "name": "Send DCA Confirmation",
+      "webhookId": "a6d5916a-6dcd-465e-9e1a-8f1a83d0b55b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "szw76cI7RCjwd91z",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "",
+        "subject": "={{$json.email.subject}}",
+        "message": "={{$json.email.html}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [2176, 528],
+      "id": "17c9e430-abe7-41e0-b123-6f8e7982fdb7",
+      "name": "Send Confirmation",
+      "webhookId": "86e36438-d086-43cc-8aea-faf8d09e615d",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "szw76cI7RCjwd91z",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Flatten the HTTP response into a single array and cache it\nconst rows = $input.all(0).flatMap(i => {\n  const j = i.json;\n  if (Array.isArray(j?.trades)) return j.trades;\n  if (Array.isArray(j?.body))   return j.body;\n  if (Array.isArray(j))         return j;\n  return j ? [j] : [];\n});\n\nconst sd = $getWorkflowStaticData('global');\nsd.acctTradesRows = rows;\n\nreturn [{ json: { cached: rows.length } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-64, 832],
+      "id": "0c5f751d-3eff-4813-9421-655d79d6b257",
+      "name": "CacheAccountTrades (DCA)"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\n// whatever EnsureConfig (Gmail/Cron) last wrote:\nconst cfg = sd.cfg || {};\n\nreturn {\n  json: {\n    ...$json,\n    cfg, // attach to item\n  },\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2528, 144],
+      "id": "6c0f3efc-4226-4f27-a8c2-3dff548929f8",
+      "name": "InjectTradeConfig3"
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "useDataOfInput": 2
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1728, 320],
+      "id": "0bd982fb-ff3f-4cbd-a6bb-2cf28dd149a7",
+      "name": "MergeTPAndCtx"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function money(v){ const n=Number(v); return Number.isFinite(n) ? n.toFixed(2) : String(v); }\n\nconst sd  = $getWorkflowStaticData('global');\nconst tid = String($json.trade_id || '');\nconst qty = Number($json.filled_qty || 0);\nconst px  = Number($json.price);\nconst whenIso = String($json.occurred_at || new Date().toISOString());\n\n// Try to enrich from cached open-trade context (may be missing if just closed)\nlet sym = '';\nlet acct = '';\nif (sd?.tpCtrl?.openTrades && Array.isArray(sd.tpCtrl.openTrades)) {\n  const hit = sd.tpCtrl.openTrades.find(t => String(t.trade_id) === tid);\n  if (hit) {\n    sym  = String(hit.symbol || sym);\n    acct = String(hit.account_id || acct);\n  }\n}\n\n// Fallback symbols if not cached\nif (!sym) sym = ($json.symbol || '').toString();\nif (!acct) acct = ($json.account_id || $json.accountId || '').toString();\n\nconst subject = `${sym || 'Trade'} • TP SELL ${qty} @ ${money(px)}`;\n\nconst html = `\n<div style=\"font:14px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111\">\n  <div style=\"padding:12px 14px;border:1px solid #eee;border-radius:10px;background:#fff\">\n    <h2 style=\"margin:0 0 6px 0;font-size:18px\">${sym || 'Trade'} — Take Profit Filled</h2>\n    <div style=\"margin:0 0 10px 0;color:#666\">\n      ${acct ? `<div><span style=\"color:#888\">Account:</span> <b>${acct}</b></div>` : ''}\n      <div style=\"margin-top:2px\"><span style=\"color:#888\">Trade ID:</span>\n        <code style=\"background:#f6f6f6;padding:2px 6px;border-radius:6px\">${tid}</code>\n      </div>\n    </div>\n\n    <div style=\"margin:10px 0\">\n      <div style=\"color:#666\">Filled SELL (TP)</div>\n      <div style=\"font-weight:600\">${qty} @ ${money(px)}</div>\n      <div style=\"color:#999;margin-top:2px\">${whenIso}</div>\n    </div>\n\n    <div style=\"color:#8a8a8a;font-size:12px;margin-top:12px\">\n      Auto-notice from n8n (TP). You’ll get DCA emails separately if they trigger.\n    </div>\n  </div>\n</div>\n`;\n\nconst text =\n`${sym || 'Trade'} — Take Profit Filled\n${acct ? `Account: ${acct}\\n` : ''}Trade ID: ${tid}\n\nFilled SELL (TP): ${qty} @ ${money(px)}\nWhen: ${whenIso}\n`;\n\nreturn { json: { ...$json, email: { subject, html, text } } };"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2528, 752],
+      "id": "b19a4601-87f0-4d45-b169-1a0ed6bc7dba",
+      "name": "BuildTpFillEmail"
+    },
+    {
+      "parameters": {
+        "amount": 1
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [-3648, 944],
+      "id": "fcdb5664-a7e9-4e64-bc2a-386c88aad581",
+      "name": "WaitForTP (1s)",
+      "webhookId": "51b6ed4e-7754-48bd-acd1-6a5de6f0fd9f"
+    },
+    {
+      "parameters": {
+        "sendTo": "",
+        "subject": "={{ $json.email.subject }}",
+        "message": "={{ $json.email.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [-2304, 752],
+      "id": "f335fff5-e841-46e6-a981-63b197c59c78",
+      "name": "Send TP Email",
+      "webhookId": "d155194d-12d7-4633-a021-0e037b7cc761",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "szw76cI7RCjwd91z",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "https://127.0.0.1:5000/v1/api/iserver/account/orders",
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-288, 1024],
+      "id": "6f557abe-d849-4eee-88b0-3a38fca76358",
+      "name": "ReadOpenOrders",
+      "retryOnFail": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const rows = $input.all().flatMap(i => {\n  const j = i.json;\n  if (Array.isArray(j?.orders)) return j.orders;\n  if (Array.isArray(j)) return j;\n  return j ? [j] : [];\n});\n\nconst sd = $getWorkflowStaticData('global');\nsd.openOrdersRows = rows;\n\nreturn [{ json: { openOrdersCached: rows.length } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-64, 1024],
+      "id": "84dd558c-c6ce-466a-8bea-e40176fdf926",
+      "name": "CacheOpenOrders"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [-512, 928],
+      "id": "540f9c31-acdb-4aa9-b4e6-bb6f44c84f78",
+      "name": "Cooldown_DCA_Buy (5s)",
+      "webhookId": "bee657d1-a575-4548-b589-620808ac6fa8"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const sd = $getWorkflowStaticData('global');\n\nconst trade_id = String($json.trade_id || '');\nconst conid    = Number($json.conid);\nconst qty      = Number($json?.dca?.qty || 0);\nconst offset   = Number($json?.dca?.offset ?? NaN);\nconst placed_ms = Date.now();\n\n// Be loud in the item if something critical is missing\nif (!trade_id || !Number.isFinite(conid) || !qty) {\n  return {\n    ...$json,\n    dca_stamp_error: 'missing trade_id/conid/qty',\n  };\n}\n\nsd.dcaPlacements = sd.dcaPlacements || {};\nsd.dcaPlacements[trade_id] = { conid, qty, offset, placed_ms };\n\n// Optional convenience for picker fallback\nsd.lastDcaTradeId = trade_id;\n\nreturn {\n  ...$json,\n  dca_stamp: { conid, qty, offset, placed_ms }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1856, 944],
+      "id": "1369b284-ca92-47cd-890f-13ec344e17e1",
+      "name": "StampDcaPlacement"
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "numberInputs": 3,
+        "useDataOfInput": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [160, 832],
+      "id": "7e166894-09dd-4fa9-b459-b850240db645",
+      "name": "MergeDCAReady"
+    },
+    {
+      "parameters": {
+        "mode": "chooseBranch",
+        "useDataOfInput": 2
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [1504, 848],
+      "id": "dde6ce88-6c72-4878-9de0-658cb2707243",
+      "name": "MergeBackContext"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Upsert the stamp and store buy_coid for audit\nINSERT INTO public.trade_dcasteps (trade_id, dca_offset, qty, activated_at, buy_coid)\nVALUES (\n  '{{ $json.trade_id }}',\n  {{ $json.dca.offset }},\n  {{ $json.dca.qty }},\n  now(),\n  '{{ $json.dca_coid }}'\n)\nON CONFLICT (trade_id, dca_offset) DO UPDATE\nSET\n  qty          = EXCLUDED.qty,\n  buy_coid     = COALESCE(public.trade_dcasteps.buy_coid, EXCLUDED.buy_coid),\n  activated_at = LEAST(public.trade_dcasteps.activated_at, EXCLUDED.activated_at);\n\n-- PASS-THROUGH (keeps downstream shape identical) + include dcaBuyOrder for HTTP node\nSELECT\n  '{{ $json.trade_id }}'::text      AS trade_id,\n  '{{ $json.symbol }}'::text        AS symbol,\n  {{ $json.conid }}::bigint         AS conid,\n  '{{ $json.account_id }}'::text    AS account_id,\n  {{ $json.entry_price }}::numeric  AS entry_price,\n  {{ $json.entry_qty }}::int        AS entry_qty,\n  {{ $json.tp_increment }}::numeric AS tp_increment,\n  {{ $json.max_shares }}::int       AS max_shares,\n  {{ $json.remaining_qty }}::int    AS remaining_qty,\n  {{ $json.last }}::numeric         AS last,\n  {{ $json.dca.offset }}::numeric   AS \"dca.offset\",\n  {{ $json.dca.qty }}::int          AS \"dca.qty\",\n  '{{ $json.dca_coid }}'::text      AS dca_coid,\n  {{ $json.dca_trigger }}::numeric  AS dca_trigger,\n  {{ $json.dca_limit }}::numeric    AS dca_limit,\n  json_build_object(\n    'conid',     {{ $json.conid }},\n    'secType',   'STK',\n    'cOid',      '{{ $json.dca_coid }}',\n    'side',      'BUY',\n    'orderType', 'LMT',\n    'tif',       'DAY',\n    'quantity',  {{ $json.dca.qty }},\n    'price',     {{ $json.dca_limit }},\n    'lmtPrice',  {{ $json.dca_limit }}\n  ) AS \"dcaBuyOrder\";",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-1632, 1024],
+      "id": "2a778e38-4a74-446d-b220-79503840330b",
+      "name": "RecordDcaPlacement",
+      "credentials": {
+        "postgres": {
+          "id": "H2EJRRylqhu4ULWV",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const row = $json;\nconst last = Number(row.last);\nconst trigger = Number(row.dca_trigger);\n\nif (!Number.isFinite(last) || !Number.isFinite(trigger)) {\n  return { json: { ...row, abort: true, reason: 'no price/trigger' } };\n}\nif (last <= trigger) {\n  return { json: { ...row, abort: false } };\n}\nreturn { json: { ...row, abort: true, reason: 'rebounded' } };\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1184, 1024],
+      "id": "0684d4f4-a164-4884-a238-e5157f675f8a",
+      "name": "VerifyDcaTriggerBeforePlace"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9c58d99a-fefe-4258-a823-229139f20423",
+              "leftValue": "={{$json.abort}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-960, 1024],
+      "id": "846df5ff-f7f3-482c-93c5-679aa0d4927f",
+      "name": "If_AbortDCA"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM public.trade_dcasteps\nWHERE trade_id = '{{ $json.trade_id }}'\n  AND ROUND(dca_offset::numeric, 3) = ROUND({{ $json.dca?.offset ?? $json[\"dca.offset\"] ?? $json.dca_offset }}, 3)\n  AND dca_fill_price IS NULL\n  AND tp_coid IS NULL;\n",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [-736, 1120],
+      "id": "4852d856-0728-4afb-a6c6-e97c7d903080",
+      "name": "UndoDcaStamp",
+      "credentials": {
+        "postgres": {
+          "id": "H2EJRRylqhu4ULWV",
+          "name": "Postgres account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $json;\nreturn {\n  json: {\n    ...j,\n    dca: {\n      offset: Number(j[\"dca.offset\"]),\n      qty: Number(j[\"dca.qty\"]),\n    }\n  }\n};\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1408, 1024],
+      "id": "8a791528-e54d-4432-9eb1-1cd3a815034a",
+      "name": "NestDCA"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "function nowHMET() {\n  const p = Object.fromEntries(\n    new Intl.DateTimeFormat('en-CA', {\n      timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', hour12: false,\n    }).formatToParts(new Date()).map(x => [x.type, x.value])\n  );\n  return `${p.hour}:${p.minute}`;\n}\n\nconst sd = $getWorkflowStaticData('global');\nconst cfg = sd.cfg || {};\nconst start = String(cfg.marketStartET || '09:45').slice(0,5);\nconst end   = String(cfg.marketEndET   || '15:50').slice(0,5);\nconst now   = nowHMET();\n\nreturn { json: { within: (now >= start && now <= end), now, start, end } };\n"
+      },
+      "id": "e1e17813-12da-4d9b-872a-e46ce77b0bb8",
+      "name": "GuardMarketWindow (Cron)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4320, 848]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "2baeae19-0d12-4856-8921-24bf1a7251bb",
+              "leftValue": "={{$json.within}}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "df05d1b1-97a1-4809-a277-a8b882a48c89",
+      "name": "IF_WithinMarket (Cron)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [-4096, 848]
+    }
+  ],
+  "connections": {
+    "Gmail Trigger": {
+      "main": [
+        [
+          {
+            "node": "EnsureConfig (Gmail)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ParseEmailCommand": {
+      "main": [
+        [
+          {
+            "node": "If_IsTradeCommand",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FindConid": {
+      "main": [
+        [
+          {
+            "node": "CollapseSecdefToNYSE",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ReadTrades": {
+      "main": [
+        [
+          {
+            "node": "TradesNormalize",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_NeedRetry": {
+      "main": [
+        [
+          {
+            "node": "GateRetryOnPlaced",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SaveFirstEntry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait10s": {
+      "main": [
+        [
+          {
+            "node": "ReadTrades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SaveFirstEntry": {
+      "main": [
+        [
+          {
+            "node": "InjectTradeConfig",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PlaceInitTP": {
+      "main": [
+        [
+          {
+            "node": "CooldownInitTP",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CooldownInitTP": {
+      "main": [
+        [
+          {
+            "node": "MergeTPAndCtx",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CollapseSecdefToNYSE": {
+      "main": [
+        [
+          {
+            "node": "InjectTradeConfig3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ShouldPlaceInitBuy": {
+      "main": [
+        [
+          {
+            "node": "If_PlaceInitBuy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_PlaceInitBuy": {
+      "main": [
+        [
+          {
+            "node": "AttachTradeId",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ReadTrades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PlaceInitBuy": {
+      "main": [
+        [
+          {
+            "node": "MarkInitBuyPlaced",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MarkInitBuyPlaced": {
+      "main": [
+        [
+          {
+            "node": "Cooldown3s",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cooldown3s": {
+      "main": [
+        [
+          {
+            "node": "ReadTrades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_IsTradeCommand": {
+      "main": [
+        [
+          {
+            "node": "ApplyCmdToCfg",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "RemoveLabel1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RemoveLabel": {
+      "main": [
+        [
+          {
+            "node": "EnsureSymbol",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TradesNormalize": {
+      "main": [
+        [
+          {
+            "node": "PickLatestBuy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildInitTPOrder": {
+      "main": [
+        [
+          {
+            "node": "InjectAccountId1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cron": {
+      "main": [
+        [
+          {
+            "node": "GuardMarketWindow (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EnsureConfig (Cron)": {
+      "main": [
+        [
+          {
+            "node": "LoadOpenTradeIdsWithTPCoids",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "WaitForTP (1s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EnsureConfig (Gmail)": {
+      "main": [
+        [
+          {
+            "node": "ParseEmailCommand",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "EnsureSymbol": {
+      "main": [
+        [
+          {
+            "node": "FindConid",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ApplyCmdToCfg": {
+      "main": [
+        [
+          {
+            "node": "RemoveLabel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GateRetryOnPlaced": {
+      "main": [
+        [
+          {
+            "node": "If_CanRetry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_CanRetry": {
+      "main": [
+        [
+          {
+            "node": "Wait10s",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "EnsureSymbol",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "InjectAccountId": {
+      "main": [
+        [
+          {
+            "node": "PlaceInitBuy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "InjectAccountId1": {
+      "main": [
+        [
+          {
+            "node": "CarryInitContext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PickLatestBuy": {
+      "main": [
+        [
+          {
+            "node": "IF_NeedRetry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "InjectTradeConfig": {
+      "main": [
+        [
+          {
+            "node": "BuildInitTPOrder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AttachTradeId": {
+      "main": [
+        [
+          {
+            "node": "InjectAccountId",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "InsertTrade": {
+      "main": [[]]
+    },
+    "InsertExecution (INIT BUY)": {
+      "main": [[]]
+    },
+    "CarryInitContext": {
+      "main": [
+        [
+          {
+            "node": "PlaceInitTP",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "ContextPass",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ContextPass": {
+      "main": [
+        [
+          {
+            "node": "MergeTPAndCtx",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "BuildInitEmail": {
+      "main": [
+        [
+          {
+            "node": "Send Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildTPQueryBatch": {
+      "main": [
+        [
+          {
+            "node": "ReadAccountTrades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LoadOpenTradeIdsWithTPCoids": {
+      "main": [
+        [
+          {
+            "node": "BuildTPQueryBatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ReadAccountTrades": {
+      "main": [
+        [
+          {
+            "node": "TPFillMatch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TPFillMatch": {
+      "main": [
+        [
+          {
+            "node": "ApplyTPFill",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ApplyTPFill": {
+      "main": [
+        [
+          {
+            "node": "BuildTpFillEmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "LoadOpenTradesForDCA": {
+      "main": [
+        [
+          {
+            "node": "BuildSnapshotRequest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildSnapshotRequest": {
+      "main": [
+        [
+          {
+            "node": "SnapshotLast (DCA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SnapshotLast (DCA)": {
+      "main": [
+        [
+          {
+            "node": "JoinPricesWithTrades",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "JoinPricesWithTrades": {
+      "main": [
+        [
+          {
+            "node": "DcaDecidePerTrade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DcaDecidePerTrade": {
+      "main": [
+        [
+          {
+            "node": "If_ShouldPlaceDca",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_ShouldPlaceDca": {
+      "main": [
+        [
+          {
+            "node": "BuildDcaBuyOrder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildDcaBuyOrder": {
+      "main": [
+        [
+          {
+            "node": "StampDcaPlacement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PlaceDcaBuy": {
+      "main": [
+        [
+          {
+            "node": "Cooldown_DCA_Buy (5s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ReadAccountTrades (DCA Fill)": {
+      "main": [
+        [
+          {
+            "node": "CacheAccountTrades (DCA)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PickLatestDcaFillForThisTrade": {
+      "main": [
+        [
+          {
+            "node": "If_HaveDcaFill",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_HaveDcaFill": {
+      "main": [
+        [
+          {
+            "node": "BuildDcaTPOrder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildDcaTPOrder": {
+      "main": [
+        [
+          {
+            "node": "PlaceDcaTP",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "MergeBackContext",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "PlaceDcaTP": {
+      "main": [
+        [
+          {
+            "node": "Cooldown_DCA_TP (2s)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cooldown_DCA_TP (2s)": {
+      "main": [
+        [
+          {
+            "node": "MergeBackContext",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RecordDcaAndFill": {
+      "main": [[]]
+    },
+    "BuildDcaEmail": {
+      "main": [
+        [
+          {
+            "node": "Send DCA Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Confirmation": {
+      "main": [[]]
+    },
+    "CacheAccountTrades (DCA)": {
+      "main": [
+        [
+          {
+            "node": "MergeDCAReady",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "InjectTradeConfig3": {
+      "main": [
+        [
+          {
+            "node": "ShouldPlaceInitBuy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MergeTPAndCtx": {
+      "main": [
+        [
+          {
+            "node": "InsertTrade",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "InsertExecution (INIT BUY)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "BuildInitEmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildTpFillEmail": {
+      "main": [
+        [
+          {
+            "node": "Send TP Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "WaitForTP (1s)": {
+      "main": [
+        [
+          {
+            "node": "LoadOpenTradesForDCA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ReadOpenOrders": {
+      "main": [
+        [
+          {
+            "node": "CacheOpenOrders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CacheOpenOrders": {
+      "main": [
+        [
+          {
+            "node": "MergeDCAReady",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Cooldown_DCA_Buy (5s)": {
+      "main": [
+        [
+          {
+            "node": "ReadAccountTrades (DCA Fill)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "ReadOpenOrders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "StampDcaPlacement": {
+      "main": [
+        [
+          {
+            "node": "MergeDCAReady",
+            "type": "main",
+            "index": 2
+          },
+          {
+            "node": "RecordDcaPlacement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MergeDCAReady": {
+      "main": [
+        [
+          {
+            "node": "PickLatestDcaFillForThisTrade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MergeBackContext": {
+      "main": [
+        [
+          {
+            "node": "RecordDcaAndFill",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "BuildDcaEmail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RecordDcaPlacement": {
+      "main": [
+        [
+          {
+            "node": "NestDCA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VerifyDcaTriggerBeforePlace": {
+      "main": [
+        [
+          {
+            "node": "If_AbortDCA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If_AbortDCA": {
+      "main": [
+        [
+          {
+            "node": "UndoDcaStamp",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "PlaceDcaBuy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NestDCA": {
+      "main": [
+        [
+          {
+            "node": "VerifyDcaTriggerBeforePlace",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GuardMarketWindow (Cron)": {
+      "main": [
+        [
+          {
+            "node": "IF_WithinMarket (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF_WithinMarket (Cron)": {
+      "main": [
+        [
+          {
+            "node": "EnsureConfig (Cron)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2ad72b8a57135c0858b45babe1d15c32b07226e9bb9798740f8b1a71fe2c03f2"
+  }
+}
